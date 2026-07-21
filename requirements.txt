@@ -1,5 +1,6 @@
 fastapi
 uvicorn
+uvloop
 python-multipart
 yt-dlp[default,curl-cffi]
 shazamio
