@@ -6,6 +6,7 @@ from typing import Optional
 
 # Web Framework & Server
 from fastapi import FastAPI, UploadFile, File, Query, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import uvicorn
 
@@ -25,6 +26,17 @@ except ImportError:
 
 # Initialize FastAPI App
 app = FastAPI(title="Maximum Speed Audio Recognition Engine")
+
+# ==========================================
+# CORS MIDDLEWARE SETUP (Fixes Browser CORS Errors)
+# ==========================================
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows requests from any frontend domain
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows GET, POST, OPTIONS, etc.
+    allow_headers=["*"],
+)
 
 # Pre-instantiate Shazam engine globally for zero re-initialization lag
 shazam_engine = Shazam()
@@ -64,7 +76,8 @@ async def normalize_audio_with_ffmpeg(input_bytes: bytes) -> bytes:
 @app.get('/download-api')
 async def get_audio_sample_and_recognize(
     id_or_url: Optional[str] = Query(None, alias="id_or_url"), 
-    id: Optional[str] = Query(None)
+    id: Optional[str] = Query(None),
+    start: Optional[str] = Query(None)  # Added support for dynamic timestamp passing from frontend
 ):
     target_param = id_or_url or id
     if not target_param:
@@ -111,9 +124,12 @@ async def get_audio_sample_and_recognize(
         if not audio_url and info.get('formats'):
             audio_url = info.get('formats')[0].get('url')
 
-        # Calculate exact midpoint start time
-        duration = info.get('duration')
-        start_time = str(max(0, int(duration / 2) - 2)) if duration else '0'
+        # Use passed timestamp if available, otherwise calculate midpoint
+        if start is not None:
+            start_time = str(max(0, int(float(start))))
+        else:
+            duration = info.get('duration')
+            start_time = str(max(0, int(duration / 2) - 2)) if duration else '0'
 
     except Exception as e:
         error_detail = str(e).strip() or repr(e)
@@ -129,9 +145,9 @@ async def get_audio_sample_and_recognize(
             '-fflags', '+nobuffer',
             '-probesize', '32',
             '-analyzeduration', '0',
-            '-ss', start_time,      # Jump directly to middle before loading stream
+            '-ss', start_time,
             '-i', audio_url,
-            '-t', '5',              # 5-second slice is optimal for Shazam accuracy
+            '-t', '5',
             '-vn',
             '-acodec', 'pcm_s16le',
             '-ar', '44100',
