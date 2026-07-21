@@ -7,3 +7,4 @@ shazamio
 gradio
 spaces
 requests
+flask
