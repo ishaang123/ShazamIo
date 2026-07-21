@@ -1,9 +1,6 @@
 import os
 import re
 import sys
-import threading
-import time
-import urllib.parse
 import asyncio
 from typing import Optional
 
@@ -27,9 +24,9 @@ except ImportError:
     spaces = DummySpaces()
 
 # Initialize FastAPI App
-app = FastAPI(title="High-Speed Audio Recognition Engine")
+app = FastAPI(title="Maximum Speed Audio Recognition Engine")
 
-# Pre-instantiate Shazam engine globally so it isn't recreated every request
+# Pre-instantiate Shazam engine globally for zero re-initialization lag
 shazam_engine = Shazam()
 
 # ==========================================
@@ -38,17 +35,14 @@ shazam_engine = Shazam()
 
 @spaces.GPU
 def dummy_gpu_trigger():
-    """Satisfies platform status triggers if deployed alongside Gradio."""
     return "Core Status: Active"
 
 
 async def recognize_audio_bytes(file_bytes: bytes) -> dict:
-    """Invokes shazamio engine using the global Shazam instance."""
     return await shazam_engine.recognize(file_bytes)
 
 
 async def normalize_audio_with_ffmpeg(input_bytes: bytes) -> bytes:
-    """Non-blocking low-latency FFmpeg pipe conversion to 16-bit PCM WAV."""
     try:
         proc = await asyncio.create_subprocess_exec(
             'ffmpeg', '-fflags', '+nobuffer', '-probesize', '32', '-analyzeduration', '0',
@@ -57,11 +51,8 @@ async def normalize_audio_with_ffmpeg(input_bytes: bytes) -> bytes:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        stdout, stderr = await proc.communicate(input=input_bytes)
-        
-        if proc.returncode != 0:
-            return input_bytes
-        return stdout
+        stdout, _ = await proc.communicate(input=input_bytes)
+        return stdout if proc.returncode == 0 else input_bytes
     except Exception:
         return input_bytes
 
@@ -79,11 +70,11 @@ async def get_audio_sample_and_recognize(
     if not target_param:
         raise HTTPException(status_code=400, detail="A valid video ID or URL is required.")
 
-    # Extract Video ID
+    # Parse out Video ID
     video_id = target_param.replace('dm-', '') if not target_param.startswith('http') else target_param.split('/')[-1].split('?')[0]
     target_url = f"https://www.dailymotion.com/video/{video_id}"
 
-    # Optimized yt-dlp configuration (No restrictive socket timeouts)
+    # MAX-SPEED YT-DLP OPTIONS
     ydl_opts = {
         'format': 'ba[ext=m4a]/ba/b',
         'quiet': True,
@@ -93,6 +84,8 @@ async def get_audio_sample_and_recognize(
         'check_formats': False,
         'nocheckcertificate': True,
         'geo_bypass': True,
+        'youtube_include_dash_manifest': False,
+        'youtube_include_hls_manifest': False,
         'external_downloader_args': ['-loglevel', 'panic'],
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -118,6 +111,7 @@ async def get_audio_sample_and_recognize(
         if not audio_url and info.get('formats'):
             audio_url = info.get('formats')[0].get('url')
 
+        # Calculate exact midpoint start time
         duration = info.get('duration')
         start_time = str(max(0, int(duration / 2) - 2)) if duration else '0'
 
@@ -128,16 +122,16 @@ async def get_audio_sample_and_recognize(
     if not audio_url:
         raise HTTPException(status_code=503, detail="No playable audio stream found.")
 
-    # Extremely fast 5-second FFmpeg stream slice
+    # FAST INPUT-SEEKING FFMPEG PIPE (-ss placed before -i for fast jump)
     try:
         ffmpeg_cmd = [
             'ffmpeg',
             '-fflags', '+nobuffer',
             '-probesize', '32',
             '-analyzeduration', '0',
-            '-ss', start_time,
+            '-ss', start_time,      # Jump directly to middle before loading stream
             '-i', audio_url,
-            '-t', '5',              # 5 seconds is optimal for Shazam matching
+            '-t', '5',              # 5-second slice is optimal for Shazam accuracy
             '-vn',
             '-acodec', 'pcm_s16le',
             '-ar', '44100',
@@ -202,10 +196,6 @@ async def shazam_route(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal process failed: {str(e)}")
 
-
-# ==========================================
-# SERVER ENTRYPOINT
-# ==========================================
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=10000, log_level="info")
