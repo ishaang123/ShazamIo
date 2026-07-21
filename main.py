@@ -91,6 +91,7 @@ async def get_audio_sample_and_recognize(
         'socket_timeout': 5,
         'nocheckcertificate': True,
         'geo_bypass': True,
+        'impersonate': 'chrome',
         'external_downloader_args': ['-loglevel', 'panic']
     }
 
