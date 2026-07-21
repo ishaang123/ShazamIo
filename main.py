@@ -11,7 +11,6 @@ from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Query, HTTPException
 from fastapi.responses import JSONResponse
 import uvicorn
-import gradio as gr
 
 # Media Tools
 import yt_dlp
@@ -28,7 +27,10 @@ except ImportError:
     spaces = DummySpaces()
 
 # Initialize FastAPI App
-app = FastAPI(title="Optimized Audio Recognition Engine")
+app = FastAPI(title="High-Speed Audio Recognition Engine")
+
+# Pre-instantiate Shazam engine globally so it isn't recreated every request
+shazam_engine = Shazam()
 
 # ==========================================
 # PLATFORM STUBS & HELPER FUNCTIONS
@@ -41,16 +43,16 @@ def dummy_gpu_trigger():
 
 
 async def recognize_audio_bytes(file_bytes: bytes) -> dict:
-    """Invokes shazamio engine using raw audio bytes."""
-    shazam = Shazam()
-    return await shazam.recognize(file_bytes)
+    """Invokes shazamio engine using the global Shazam instance."""
+    return await shazam_engine.recognize(file_bytes)
 
 
 async def normalize_audio_with_ffmpeg(input_bytes: bytes) -> bytes:
-    """Non-blocking async FFmpeg pipe conversion to 16-bit PCM WAV."""
+    """Non-blocking low-latency FFmpeg pipe conversion to 16-bit PCM WAV."""
     try:
         proc = await asyncio.create_subprocess_exec(
-            'ffmpeg', '-i', 'pipe:0', '-f', 'wav', '-acodec', 'pcm_s16le', '-ar', '44100', 'pipe:1',
+            'ffmpeg', '-fflags', '+nobuffer', '-probesize', '32', '-analyzeduration', '0',
+            '-i', 'pipe:0', '-f', 'wav', '-acodec', 'pcm_s16le', '-ar', '44100', 'pipe:1',
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
@@ -58,11 +60,9 @@ async def normalize_audio_with_ffmpeg(input_bytes: bytes) -> bytes:
         stdout, stderr = await proc.communicate(input=input_bytes)
         
         if proc.returncode != 0:
-            print(f"FFmpeg conversion warning: {stderr.decode('utf-8', errors='ignore')}")
             return input_bytes
         return stdout
-    except Exception as err:
-        print(f"FFmpeg pipeline bypass (using raw bytes): {err}")
+    except Exception:
         return input_bytes
 
 
@@ -79,17 +79,18 @@ async def get_audio_sample_and_recognize(
     if not target_param:
         raise HTTPException(status_code=400, detail="A valid video ID or URL is required.")
 
-    # Parse out Video ID
+    # Extract Video ID
     video_id = target_param.replace('dm-', '') if not target_param.startswith('http') else target_param.split('/')[-1].split('?')[0]
     target_url = f"https://www.dailymotion.com/video/{video_id}"
 
-    # YT-DLP extraction setup
+    # Optimized yt-dlp configuration (No restrictive socket timeouts)
     ydl_opts = {
-        'format': 'ba/b',
+        'format': 'ba[ext=m4a]/ba/b',
         'quiet': True,
         'no_warnings': True,
         'skip_download': True,
-        'socket_timeout': 10,
+        'noplaylist': True,
+        'check_formats': False,
         'nocheckcertificate': True,
         'geo_bypass': True,
         'external_downloader_args': ['-loglevel', 'panic'],
@@ -98,11 +99,10 @@ async def get_audio_sample_and_recognize(
         }
     }
 
-    # Safely attach ImpersonateTarget if curl_cffi is available
     try:
         ydl_opts['impersonate'] = ImpersonateTarget.from_str('chrome')
-    except Exception as imp_err:
-        print(f"Impersonate target fallback (using standard HTTP): {imp_err}")
+    except Exception:
+        pass
 
     try:
         def extract_info():
@@ -119,7 +119,7 @@ async def get_audio_sample_and_recognize(
             audio_url = info.get('formats')[0].get('url')
 
         duration = info.get('duration')
-        start_time = str(max(0, int(duration / 2) - 5)) if duration else '0'
+        start_time = str(max(0, int(duration / 2) - 2)) if duration else '0'
 
     except Exception as e:
         error_detail = str(e).strip() or repr(e)
@@ -128,12 +128,22 @@ async def get_audio_sample_and_recognize(
     if not audio_url:
         raise HTTPException(status_code=503, detail="No playable audio stream found.")
 
-    # Slice 10-second middle section using non-blocking FFmpeg process
+    # Extremely fast 5-second FFmpeg stream slice
     try:
         ffmpeg_cmd = [
-            'ffmpeg', '-ss', start_time, '-i', audio_url,
-            '-t', '10', '-vn', '-acodec', 'pcm_s16le',
-            '-ar', '44100', '-ac', '2', '-f', 'wav', 'pipe:1'
+            'ffmpeg',
+            '-fflags', '+nobuffer',
+            '-probesize', '32',
+            '-analyzeduration', '0',
+            '-ss', start_time,
+            '-i', audio_url,
+            '-t', '5',              # 5 seconds is optimal for Shazam matching
+            '-vn',
+            '-acodec', 'pcm_s16le',
+            '-ar', '44100',
+            '-ac', '2',
+            '-f', 'wav',
+            'pipe:1'
         ]
         proc = await asyncio.create_subprocess_exec(
             *ffmpeg_cmd,
@@ -158,7 +168,7 @@ async def get_audio_sample_and_recognize(
         else:
             return JSONResponse(
                 status_code=404,
-                content={"success": False, "message": "No match found in the Shazam registry from the middle of this video."}
+                content={"success": False, "message": "No match found in the Shazam registry."}
             )
 
     except Exception as e:
@@ -194,7 +204,7 @@ async def shazam_route(file: UploadFile = File(...)):
 
 
 # ==========================================
-# LOCAL TEST RUNNER
+# SERVER ENTRYPOINT
 # ==========================================
 
 if __name__ == "__main__":
