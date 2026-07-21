@@ -15,6 +15,7 @@ import gradio as gr
 
 # Media Tools
 import yt_dlp
+from yt_dlp.networking.impersonate import ImpersonateTarget
 from shazamio import Shazam
 
 # Dummy spaces module fallback (prevents errors outside HF Spaces)
@@ -88,12 +89,20 @@ async def get_audio_sample_and_recognize(
         'quiet': True,
         'no_warnings': True,
         'skip_download': True,
-        'socket_timeout': 5,
+        'socket_timeout': 10,
         'nocheckcertificate': True,
         'geo_bypass': True,
-        'impersonate': 'chrome',
-        'external_downloader_args': ['-loglevel', 'panic']
+        'external_downloader_args': ['-loglevel', 'panic'],
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        }
     }
+
+    # Safely attach ImpersonateTarget if curl_cffi is available
+    try:
+        ydl_opts['impersonate'] = ImpersonateTarget.from_str('chrome')
+    except Exception as imp_err:
+        print(f"Impersonate target fallback (using standard HTTP): {imp_err}")
 
     try:
         def extract_info():
@@ -113,7 +122,8 @@ async def get_audio_sample_and_recognize(
         start_time = str(max(0, int(duration / 2) - 5)) if duration else '0'
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to extract stream: {str(e)}")
+        error_detail = str(e).strip() or repr(e)
+        raise HTTPException(status_code=500, detail=f"Failed to extract stream: {error_detail}")
 
     if not audio_url:
         raise HTTPException(status_code=503, detail="No playable audio stream found.")
